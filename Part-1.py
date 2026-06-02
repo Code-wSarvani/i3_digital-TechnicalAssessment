@@ -395,13 +395,7 @@ def generate_dq_report(df: pd.DataFrame) -> dict[str, Any]:
 #PHASE-B
 
 def parse_string_arrays(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Converts all stringified Python list columns from text to actual
-    Python lists using ast.literal_eval.
 
-    NOTE: ast.literal_eval is used (not json.loads) because the raw data
-    uses single-quoted strings — valid Python literals but invalid JSON.
-    """
     df = df.copy()
     for col in ARRAY_COLUMNS:
         df[col] = df[col].apply(lambda x: ast.literal_eval(str(x)))
@@ -411,17 +405,7 @@ def parse_string_arrays(df: pd.DataFrame) -> pd.DataFrame:
 def standardize_trial_phases(
     phase_series: pd.Series,
 ) -> tuple[pd.Series, pd.Series]:
-    """
-    Maps raw phase strings to:
-      1. standardized_phase  – human-readable label (e.g., 'Phase I/II')
-      2. phase_numeric       – float for ordering (e.g., 1.5)
-
-    EARLY_PHASE1 → 0.5 (not 0): it is a sub-phase of Phase I, not a full
-    phase step below it. 0.5 reflects its proximity to Phase I on the
-    development ladder and is consistent with PHASE_NUMERIC_MAP.
-
-    Null phases map to 'Unspecified Phase' / NaN.
-    """
+    
     standardized = phase_series.map(PHASE_STANDARD_MAP).fillna(
         phase_series.apply(
             lambda x: "Unspecified Phase" if pd.isna(x) else PHASE_STANDARD_MAP.get(x, x)
@@ -437,18 +421,7 @@ def standardize_recruitment_status(status_series: pd.Series) -> pd.Series:
 
 
 def engineer_duration_features(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Calculates trial_duration_days using a date fallback strategy:
-      1. completion_date – start_date
-      2. If completion_date is null → fall back to primary_completion_date
-      3. If both completion dates are null → duration = NaN
-
-    Also engineers start_year from start_date.
-
-    Edge case: WITHDRAWN trials with 0 enrollment have completion dates
-    nulled to prevent artificial duration calculations (these trials never
-    started; any completion date is a data entry artefact).
-    """
+    
     df = df.copy()
 
     withdrawn_zero = (
@@ -468,11 +441,7 @@ def engineer_duration_features(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def impute_enrollment_type(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Edge case: if enrollment > 0 and enrollment_type is missing, impute
-    as 'ACTUAL' when the trial is COMPLETED or TERMINATED — enrollment was
-    clearly achieved, so the number is an actual count.
-    """
+    
     df   = df.copy()
     mask = (
         df["enrollment_type"].isna() &
