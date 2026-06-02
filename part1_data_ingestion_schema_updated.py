@@ -2,13 +2,6 @@
 ==============================================================================
 Part 1: Data Ingestion & Schema Design
 ==============================================================================
-  Phase A  –  Parse, profile, and generate a structured Data Quality Report
-  Phase B  –  Design and implement a normalised analytical schema
-
-Author : Oncology Trial Analytics Pipeline
-Input  : SampleDateExtract.xlsx  (sheet: 1000_inteventional_trials)
-Output : Console report + normalised CSV tables in  ./output/
-==============================================================================
 """
 
 import os
@@ -23,7 +16,7 @@ import pandas as pd
 warnings.filterwarnings("ignore", category=UserWarning, module="openpyxl")
 
 # ─── Configuration ───────────────────────────────────────────────────────────
-INPUT_FILE = "C:/Users/Sarvani/Desktop/i3_digital/SampleDateExtract.xlsx"
+INPUT_FILE = "SampleDateExtract.xlsx"
 SHEET_NAME = "1000_inteventional_trials"
 OUTPUT_DIR = "output"
 
@@ -72,10 +65,6 @@ STATUS_GROUP_MAP = {
     "UNKNOWN":                 "Ambiguous",
 }
 
-# FIX 1 — Right-censoring: statuses where the trial outcome is not yet known
-# because the trial is still running. These 259 trials are excluded from
-# success rate denominators in Part 2. Rates computed without them will
-# underestimate true success rates for recent cohorts.
 CENSORED_STATUSES = {
     "RECRUITING",
     "ACTIVE_NOT_RECRUITING",
@@ -83,12 +72,6 @@ CENSORED_STATUSES = {
     "ENROLLING_BY_INVITATION",
 }
 
-# FIX 7 — Immunotherapy boundary (module-level constant, single source of truth)
-# Includes: immune-activating cell and vaccine modalities only.
-# Excluded: plain "Antibody" — too broad; captures anti-EGFR, anti-HER2, ADCs
-#           which are not conventionally immunotherapy.
-# Excluded: "Antibody Drug Conjugate (ADC)" — cytotoxic payload, not immune activation.
-# Note: "CAR-T" does NOT match any value in main_technologies; full string required.
 IMMUNOTHERAPY_TECHS = {
     "Chimeric Antigen Receptor T-Cell Therapy (CAR-T)",
     "Chimeric Antigen Receptor NK-Cell Therapy (CAR-NK)",
@@ -119,11 +102,7 @@ PHASE_NUMERIC_TO_LABEL = {
     4.0: "Phase IV",
 }
 
-
-# ╔════════════════════════════════════════════════════════════════════════════╗
-# ║                    PHASE A – PARSE & PROFILE RAW DATA                    ║
-# ╚════════════════════════════════════════════════════════════════════════════╝
-
+#PHASE-A:
 
 def load_and_profile_dataset(
     file_path: str, sheet_name: str
@@ -413,11 +392,7 @@ def generate_dq_report(df: pd.DataFrame) -> dict[str, Any]:
         "enrollment_anomalies": enroll_report,
     }
 
-
-# ╔════════════════════════════════════════════════════════════════════════════╗
-# ║              PHASE B – NORMALISED ANALYTICAL SCHEMA DESIGN               ║
-# ╚════════════════════════════════════════════════════════════════════════════╝
-
+#PHASE-B
 
 def parse_string_arrays(df: pd.DataFrame) -> pd.DataFrame:
     """
@@ -861,12 +836,6 @@ def get_normalized_tables(df: pd.DataFrame) -> dict[str, pd.DataFrame]:
             print(f"       {line}")
 
     return tables
-
-
-# ╔════════════════════════════════════════════════════════════════════════════╗
-# ║                            MAIN EXECUTION                                ║
-# ╚════════════════════════════════════════════════════════════════════════════╝
-
 
 def main():
     """Run the full Part 1 pipeline: Ingestion → Profiling → Normalisation."""
