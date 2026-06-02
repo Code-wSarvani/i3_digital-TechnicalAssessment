@@ -9,4 +9,5 @@ The objective is to transform a raw registry-style extract into a structured ana
 The project is divided into two components:
 
 Part 1: Data ingestion, profiling, cleaning, and schema design
+
 Part 2: Success metric definition and cohort-level success rate analysis
