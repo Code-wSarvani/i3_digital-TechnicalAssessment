@@ -2,15 +2,6 @@
 ==============================================================================
 Part 2: Success Rate Logic & Cohort Analysis
 ==============================================================================
-  Phase A  –  Operationalise "success" via binary and tiered proxy labels
-  Phase B  –  Compute stratified success rates with confidence intervals
-
-Author : Oncology Trial Analytics Pipeline
-Input  : SampleDateExtract.xlsx  (sheet: 1000_inteventional_trials)
-         Uses Part 1's normalisation logic internally.
-         Optional: ./output/drug_phase_summary.csv  (from Part 1 run)
-Output : Console report + cohort analysis CSVs + visualisations in  ./output/
-==============================================================================
 """
 
 import os
@@ -31,14 +22,9 @@ warnings.filterwarnings("ignore", category=UserWarning, module="openpyxl")
 warnings.filterwarnings("ignore", category=FutureWarning)
 
 # ─── Configuration ────────────────────────────────────────────────────────────
-INPUT_FILE = "C:/Users/Sarvani/Desktop/i3_digital/SampleDateExtract.xlsx"
+INPUT_FILE = "SampleDateExtract.xlsx"
 SHEET_NAME = "1000_inteventional_trials"
 OUTPUT_DIR = "output"
-
-# ─── Controlled vocabulary maps ───────────────────────────────────────────────
-# FIX 7 — NOTE: These maps are intentionally duplicated from Part 1 for script
-# self-containment. If Part 1 constants change, update both files.
-# Future refactor: extract to a shared oncology_constants.py module.
 
 PHASE_STANDARD_MAP = {
     "PHASE1":        "Phase I",
@@ -50,7 +36,6 @@ PHASE_STANDARD_MAP = {
     "EARLY_PHASE1":  "Early Phase I",
 }
 
-# FIX 7 — Key order and comment aligned with Part 1 exactly to prevent drift.
 PHASE_NUMERIC_MAP = {
     "EARLY_PHASE1":  0.5,   # sub-phase of Phase I; 0.5 reflects proximity to Phase I
     "PHASE1":        1.0,
@@ -61,8 +46,6 @@ PHASE_NUMERIC_MAP = {
     "PHASE4":        4.0,
 }
 
-# FIX 1 — Right-censoring: statuses where the trial outcome is not yet known.
-# 259 trials. Excluded from all success rate denominators.
 CENSORED_STATUSES = {
     "RECRUITING",
     "ACTIVE_NOT_RECRUITING",
@@ -80,7 +63,6 @@ ARRAY_COLUMNS = [
     "target_abbreviations",
 ]
 
-# Phase order used across funnel charts and heatmaps
 PHASE_ORDER = [
     "Early Phase I", "Phase I", "Phase I/II",
     "Phase II", "Phase II/III", "Phase III", "Phase IV",
@@ -96,21 +78,8 @@ PHASE_NUMERIC_TO_LABEL = {
     4.0: "Phase IV",
 }
 
-
-# ╔════════════════════════════════════════════════════════════════════════════╗
-# ║               DATA PREPARATION (leveraging Part 1 logic)                 ║
-# ╚════════════════════════════════════════════════════════════════════════════╝
-
-
 def prepare_analytical_dataframe(file_path: str, sheet_name: str) -> pd.DataFrame:
-    """
-    Loads, parses, standardises, and enriches the trial data — replicating
-    Part 1's normalisation steps to produce an analysis-ready DataFrame.
 
-    FIX 1 — Adds is_right_censored and is_outcome_unknown boolean columns,
-    matching Part 1's logic exactly. These flags are used downstream to
-    make exclusions explicit rather than relying on implicit np.select defaults.
-    """
     print("=" * 78)
     print("  PREPARING ANALYTICAL DATAFRAME  (Part 1 pipeline replay)")
     print("=" * 78)
@@ -152,7 +121,6 @@ def prepare_analytical_dataframe(file_path: str, sheet_name: str) -> pd.DataFram
     df["trial_duration_days"] = duration.where(duration >= 0, other=np.nan)
     df["start_year"] = df["start_date"].dt.year
 
-    # FIX 1 — Explicit exclusion flags (mirrors Part 1 build_dim_trials logic)
     df["is_right_censored"]  = df["recruitment_status"].isin(CENSORED_STATUSES)
     df["is_outcome_unknown"] = df["recruitment_status"] == "UNKNOWN"
 
@@ -163,40 +131,7 @@ def prepare_analytical_dataframe(file_path: str, sheet_name: str) -> pd.DataFram
     print("  ✅ Analytical DataFrame prepared.\n")
     return df
 
-
-# ╔════════════════════════════════════════════════════════════════════════════╗
-# ║            PHASE A – OPERATIONALISE "SUCCESS" PROXY                      ║
-# ╚════════════════════════════════════════════════════════════════════════════╝
-
-
 def apply_binary_success_rules(df: pd.DataFrame) -> pd.Series:
-    """
-    Computes a binary success proxy flag from recruitment_status:
-
-        Success  (1)   : COMPLETED
-        Failure  (0)   : TERMINATED
-        Excluded (NaN) : WITHDRAWN (0 enroll), RECRUITING, ACTIVE_NOT_RECRUITING,
-                         NOT_YET_RECRUITING, ENROLLING_BY_INVITATION,
-                         SUSPENDED, UNKNOWN
-
-    FIX 1 — Exclusions are now made explicit via is_right_censored and
-    is_outcome_unknown flags rather than relying solely on np.select's
-    default=np.nan. If a new status appears in the data, it will still
-    default to NaN, but the log line below will surface the count.
-
-    Rationale
-    ---------
-    Clinical trial registries do not store a direct "success" flag. This
-    proxy uses operational completion as a stand-in for success:
-      • COMPLETED: reached its planned endpoint — strongest available signal.
-      • TERMINATED: stopped early (futility, safety, lack of efficacy).
-      • All other statuses: in-progress or ambiguous — excluded to avoid
-        contaminating the success rate estimate with incomplete data.
-
-    IMPORTANT: This is an *operational completion* proxy, NOT a measure of
-    *therapeutic efficacy*. A trial can complete but fail its primary
-    endpoint. A terminated trial may (rarely) be stopped for efficacy.
-    """
     conditions = [
         df["recruitment_status"] == "COMPLETED",
         df["recruitment_status"] == "TERMINATED",
@@ -209,7 +144,6 @@ def apply_binary_success_rules(df: pd.DataFrame) -> pd.Series:
         name="binary_success",
     )
 
-    # FIX 1 — Log explicit exclusion counts
     censored_count = df["is_right_censored"].sum()
     unknown_count  = df["is_outcome_unknown"].sum()
     other_excluded = result.isna().sum() - censored_count - unknown_count
@@ -236,21 +170,6 @@ def apply_tiered_success_rules(df: pd.DataFrame) -> tuple[pd.Series, float]:
         NaN   (Excluded)          : RECRUITING, ACTIVE_NOT_RECRUITING,
                                     NOT_YET_RECRUITING, ENROLLING_BY_INVITATION,
                                     UNKNOWN
-
-    FIX 8 — NOTE on median_enrollment timing:
-    median_enrollment is computed on COMPLETED + ACTUAL trials after
-    enrollment_type imputation (which runs in prepare_analytical_dataframe()).
-    The withdrawn-trial date cleanup does not affect enrollment values, so
-    the median is stable. However, it reflects this 1,000-trial extract only
-    and may not generalise to the full registry.
-
-    Rationale
-    ---------
-    The tiered model adds granularity beyond binary success:
-      • Tier 3 distinguishes fully-enrolled completions from small pilots.
-      • Tier 1 separates mid-study failures (enrolled patients but stopped)
-        from pre-start withdrawals (Tier 0), which often reflect administrative
-        rather than scientific failures.
     """
     completed_actual = df[
         (df["recruitment_status"] == "COMPLETED")
@@ -395,31 +314,25 @@ def operationalise_success(df: pd.DataFrame) -> pd.DataFrame:
     else:
         print("     V3 - NCT00149019 not found in dataset (skipped)")
 
-    # FIX 1 — V4: is_right_censored count
+    # V4: is_right_censored count
     v4_pass = df["is_right_censored"].sum() == 259
     print(f"     V4 - is_right_censored count == 259 : "
           f"{'✅ PASS' if v4_pass else '❌ FAIL'} "
           f"(actual={df['is_right_censored'].sum()})")
 
-    # FIX 1 — V5: is_outcome_unknown count
+    # V5: is_outcome_unknown count
     v5_pass = df["is_outcome_unknown"].sum() == 121
     print(f"     V5 - is_outcome_unknown count == 121 : "
           f"{'✅ PASS' if v5_pass else '❌ FAIL'} "
           f"(actual={df['is_outcome_unknown'].sum()})")
 
-    # FIX 1 — V6: No censored/unknown trial has a non-NaN binary_success
+    # V6: No censored/unknown trial has a non-NaN binary_success
     censored_or_unknown = df["is_right_censored"] | df["is_outcome_unknown"]
     v6_pass = df.loc[censored_or_unknown, "binary_success"].isna().all()
     print(f"     V6 - Censored/unknown trials have NaN binary_success : "
           f"{'✅ PASS' if v6_pass else '❌ FAIL'}")
 
     return df
-
-
-# ╔════════════════════════════════════════════════════════════════════════════╗
-# ║        PHASE B – STRATIFIED SUCCESS RATES & COHORT ANALYSIS              ║
-# ╚════════════════════════════════════════════════════════════════════════════╝
-
 
 def compute_wilson_ci(
     successes: int, total: int, confidence: float = 0.95
@@ -456,25 +369,6 @@ def calculate_cohort_success_rates(
     success_col: str = "binary_success",
     min_cohort_size: int = 3,
 ) -> pd.DataFrame:
-    """
-    Aggregates trials by the given dimension and computes:
-      - total_trials     : number of evaluable trials (non-NaN success)
-      - success_count    : sum of success values
-      - failure_count    : total - successes
-      - success_rate     : success_count / total_trials
-      - ci_lower, ci_upper : Wilson Score 95% CI bounds
-      - low_sample_flag  : True if total_trials < 5
-
-    NOTE: When success_col="tiered_success", success_count is the SUM of
-    tier values (0–3) and success_rate is the mean tier score per cohort —
-    a valid ordinal summary of the tier distribution. It is NOT a binary
-    success rate. Interpret accordingly.
-
-    FIX 5 — Default min_cohort_size=3 (was 1 in some callers). Phase funnel
-    overrides to 1 explicitly to preserve funnel shape.
-
-    Trials with NaN success are excluded from the calculation.
-    """
     evaluable = df[df[success_col].notna()].copy()
 
     grouped = (
@@ -544,16 +438,7 @@ def calculate_multidim_success_rates(
 # ── Explode helpers ───────────────────────────────────────────────────────────
 
 def explode_main_technology(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Explodes nested main_technologies lists so each trial-technology
-    combination becomes a separate row.
-
-    FIX 3 — After exploding, deduplicates on (ID-datalake, main_technology)
-    so each trial contributes exactly one success/failure observation per
-    unique technology. A trial with 3 drugs all classified as 'Antibody'
-    counts once in the Antibody cohort, not three times. This preserves
-    statistical independence of observations.
-    """
+   
     df = df.copy()
 
     def flatten_tech(tech_list):
@@ -569,18 +454,12 @@ def explode_main_technology(df: pd.DataFrame) -> pd.DataFrame:
     df = df.explode("main_technology_flat").rename(
         columns={"main_technology_flat": "main_technology"}
     )
-    # FIX 3 — Deduplicate: one row per (trial, technology)
     df = df.drop_duplicates(subset=["ID-datalake", "main_technology"])
     return df
 
 
 def explode_target_abbreviation(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Explodes nested target_abbreviations lists so each trial-target
-    combination becomes a separate row.
-
-    FIX 3 — Deduplicated on (ID-datalake, target_class) after exploding.
-    """
+    
     df = df.copy()
 
     def flatten_targets(tgt_list):
@@ -594,23 +473,17 @@ def explode_target_abbreviation(df: pd.DataFrame) -> pd.DataFrame:
 
     df["target_class"] = df["target_abbreviations"].apply(flatten_targets)
     df = df.explode("target_class")
-    # FIX 3 — Deduplicate: one row per (trial, target)
     df = df.drop_duplicates(subset=["ID-datalake", "target_class"])
     return df
 
 
 def explode_indications(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Explodes indications list to one row per trial-indication pair.
-
-    FIX 3 — Deduplicated on (ID-datalake, indication) after exploding.
-    """
+   
     df = df.copy()
     df["indication"] = df["indications"].apply(
         lambda x: list(set(x)) if x else ["Unspecified"]
     )
     df = df.explode("indication")
-    # FIX 3 — Deduplicate: one row per (trial, indication)
     df = df.drop_duplicates(subset=["ID-datalake", "indication"])
     return df
 
@@ -624,14 +497,7 @@ def plot_success_heatmap(
     output_path: str,
     top_n: int = 15,
 ):
-    """
-    Plots an Indication × Phase success rate heatmap.
-    Only shows the top N indications by total trial count for readability.
-
-    FIX 6 — Annotation counts now use aggfunc="sum" (was "first").
-    aggfunc="first" silently picked one value when duplicates existed after
-    exploding indications. aggfunc="sum" correctly aggregates trial counts.
-    """
+   
     ind_totals = cohort_df.groupby(row_col)["total_trials"].sum()
     top_inds   = ind_totals.nlargest(top_n).index
     filtered   = cohort_df[cohort_df[row_col].isin(top_inds)]
@@ -639,7 +505,6 @@ def plot_success_heatmap(
     pivot = filtered.pivot_table(
         index=row_col, columns=col_col, values="success_rate", aggfunc="first"
     )
-    # FIX 6 — Use sum for count annotations
     annot_pivot = filtered.pivot_table(
         index=row_col, columns=col_col, values="total_trials", aggfunc="sum"
     )
@@ -737,14 +602,7 @@ def plot_forest_ci(
 
 
 def plot_trial_phase_funnel(df: pd.DataFrame, output_path: str):
-    """
-    Trial-level phase attrition funnel: shows total trial counts and
-    success rates across the clinical development pipeline.
-
-    FIX 9 — 'Early Phase I' is now included in phase_order.
-    'Unspecified Phase' is excluded and its count is printed as a note.
-    """
-    # FIX 9 — PHASE_ORDER now includes Early Phase I
+   
     evaluable = df[df["binary_success"].notna()].copy()
 
     # Note unspecified phase exclusion
@@ -801,7 +659,6 @@ def plot_trial_phase_funnel(df: pd.DataFrame, output_path: str):
     ax1.legend(lines1 + lines2, labels1 + labels2, loc="upper right",
                fontsize=9, framealpha=0.9)
 
-    # FIX 9 — Note Unspecified Phase exclusion
     note = f"Note: 'Unspecified Phase' trials (n={unspecified_n}) excluded — phase position unknown."
     ax1.set_title(
         "Clinical Phase Attrition Funnel (Trial-Level)\n"
@@ -821,20 +678,7 @@ def plot_trial_phase_funnel(df: pd.DataFrame, output_path: str):
 
 
 def plot_drug_phase_funnel(drug_phase_summary: pd.DataFrame, output_path: str):
-    """
-    FIX 2 — Drug-level phase distribution chart.
-
-    Shows how many unique drugs reached each phase as their highest phase
-    in this 1,000-trial extract. This is the correct basis for understanding
-    drug program distribution — a trial-level funnel conflates independent
-    trials with sequential development programs for the same drug.
-
-    IMPORTANT: This chart shows phase DISTRIBUTION, not attrition RATES.
-    Drug-level success/failure outcomes are not available in this extract
-    (drug_phase_summary tracks highest phase reached, not trial completion).
-    A true drug-level attrition rate would require linking each drug to its
-    terminal trial outcome, which is outside the scope of this dataset.
-    """
+  
     # Map numeric phase to label if needed
     if "max_phase_label" not in drug_phase_summary.columns:
         drug_phase_summary = drug_phase_summary.copy()
@@ -965,7 +809,6 @@ def run_cohort_analysis(df: pd.DataFrame) -> dict[str, pd.DataFrame]:
 
     # ── Dimension 4: Phase-level success (trial-level funnel) ─────────────
     print("\n─── DIMENSION 4: Phase Attrition Funnel (Trial-Level) ────────")
-    # FIX 5 — Phase funnel uses min_cohort_size=1 to preserve funnel shape
     cohort_phase = calculate_cohort_success_rates(
         df, "standardized_phase", min_cohort_size=1
     )
@@ -981,7 +824,6 @@ def run_cohort_analysis(df: pd.DataFrame) -> dict[str, pd.DataFrame]:
 
     plot_trial_phase_funnel(df, os.path.join(OUTPUT_DIR, "funnel_trial_phase.png"))
 
-    # FIX 2 — Drug-level funnel (requires drug_phase_summary.csv from Part 1)
     drug_phase_path = os.path.join(OUTPUT_DIR, "drug_phase_summary.csv")
     if os.path.exists(drug_phase_path):
         drug_phase_summary = pd.read_csv(drug_phase_path)
@@ -1000,7 +842,6 @@ def run_cohort_analysis(df: pd.DataFrame) -> dict[str, pd.DataFrame]:
     print("  NOTE: Tiered success (0–3 scale) is averaged per phase.")
     print("  Tier 3 = fully-enrolled completion; Tier 0 = pre-start withdrawal.")
     print("  'success_rate' here = mean tier score, NOT a binary success rate.")
-    # FIX 4 — Use tiered_success column; min_cohort_size=1 for phase funnel
     cohort_tiered_phase = calculate_cohort_success_rates(
         df[df["tiered_success"].notna()],
         "standardized_phase",
@@ -1041,7 +882,6 @@ def run_cohort_analysis(df: pd.DataFrame) -> dict[str, pd.DataFrame]:
         print(f"     V2 ({name}) - CI width ↓ as n ↑ : "
               f"{'✅ PASS' if v2_pass else '⚠️ WEAK'} (corr={corr:.3f})")
 
-    # FIX 3 — V7: After dedup, no trial appears more than once per technology
     df_tech_check = explode_main_technology(df)
     max_dups = df_tech_check.groupby("main_technology")["ID-datalake"].apply(
         lambda x: x.duplicated().sum()
@@ -1051,12 +891,6 @@ def run_cohort_analysis(df: pd.DataFrame) -> dict[str, pd.DataFrame]:
           f"{'✅ PASS' if v7_pass else '❌ FAIL'} (max_dups={max_dups})")
 
     return results
-
-
-# ╔════════════════════════════════════════════════════════════════════════════╗
-# ║                            MAIN EXECUTION                                ║
-# ╚════════════════════════════════════════════════════════════════════════════╝
-
 
 def main():
     """Run the full Part 2 pipeline: Success Logic → Cohort Analysis."""
@@ -1069,7 +903,6 @@ def main():
     df = operationalise_success(df)
 
     # Export enriched trial data
-    # FIX 1 — is_right_censored and is_outcome_unknown added to export
     export_cols = [
         "ID-datalake", "nct_id", "brief_title", "phase",
         "standardized_phase", "phase_numeric", "recruitment_status",
