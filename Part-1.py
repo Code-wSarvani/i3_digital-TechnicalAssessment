@@ -496,28 +496,7 @@ def deduplicate_indication_lists(indications: list) -> list:
 
 
 def build_dim_trials(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Builds the DimTrials fact table with all standardised and engineered
-    fields, including the two new analytical flags:
-
-      is_right_censored  — True for the 259 Active/Ongoing trials whose
-                           outcome is not yet known. These trials must be
-                           excluded from success rate denominators in Part 2.
-                           Rates computed without them underestimate true
-                           success rates for recent cohorts.
-
-      is_outcome_unknown — True for the 121 UNKNOWN trials (12.1% of dataset).
-                           Outcome is unobservable from registry data alone.
-                           Excluded from success rate denominators in Part 2.
-
-    FIX 5: enrollment_per_month is now NaN for ESTIMATED enrollment.
-           Dividing a projected enrollment count by trial duration produces
-           a misleading rate. Only ACTUAL enrollment counts are used.
-
-    FIX 6: drug_count uses drugs_datalake (catalogued therapeutic agents only),
-           not interventions_drugs (which includes procedures, imaging, and
-           supportive care that are not drugs).
-    """
+   
     trials = df[[
         "ID-datalake", "nct_id", "brief_title", "official_title",
         "phase", "standardized_phase", "phase_numeric",
@@ -529,13 +508,10 @@ def build_dim_trials(df: pd.DataFrame) -> pd.DataFrame:
 
     trials = trials.rename(columns={"ID-datalake": "trial_id", "phase": "raw_phase"})
 
-    # FIX 1 — is_right_censored
     trials["is_right_censored"] = df["recruitment_status"].isin(CENSORED_STATUSES)
 
-    # FIX 3 — is_outcome_unknown
     trials["is_outcome_unknown"] = df["recruitment_status"] == "UNKNOWN"
 
-    # FIX 6 — drug_count from drugs_datalake (not interventions_drugs)
     trials["drug_count"] = df["drugs_datalake"].apply(len)
     trials["is_combination_therapy"] = trials["drug_count"] > 1
 
@@ -548,7 +524,6 @@ def build_dim_trials(df: pd.DataFrame) -> pd.DataFrame:
     trials["is_late_stage"]  = df["phase"].isin({"PHASE3", "PHASE4"})
     trials["is_early_phase"] = df["phase"].isin({"EARLY_PHASE1", "PHASE1"})
 
-    # FIX 7 — is_immunotherapy using corrected IMMUNOTHERAPY_TECHS set
     def _has_immunotherapy(tech_list: Any) -> bool:
         if not isinstance(tech_list, list):
             return False
@@ -562,7 +537,6 @@ def build_dim_trials(df: pd.DataFrame) -> pd.DataFrame:
 
     trials["is_immunotherapy"] = df["main_technologies"].apply(_has_immunotherapy)
 
-    # FIX 5 — enrollment_per_month restricted to ACTUAL enrollment only
     actual_enrollment = np.where(
         df["enrollment_type"] == "ACTUAL", df["enrollment"], np.nan
     )
@@ -576,16 +550,6 @@ def build_dim_trials(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def normalize_therapies(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """
-    Extracts DimTherapies and FactTrialTherapies from the parsed array
-    columns, preserving element-wise index alignment.
-
-    FIX 2 — DUMMY_AGENT removed: trials with empty drugs_datalake ([]) are
-    skipped entirely. They remain in dim_trials and fact_trial_indications
-    for indication and phase analysis, but produce no rows here. This
-    prevents 77 heterogeneous trials (procedural, herbal, uncatalogued)
-    from polluting technology-level success rate calculations in Part 2.
-    """
     therapy_records  = []
     mapping_records  = []
     skipped_no_drug  = 0
@@ -598,7 +562,6 @@ def normalize_therapies(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
         tgt_names = row["target_names"]
         tgt_abbrs = row["target_abbreviations"]
 
-        # FIX 2: skip trials with no catalogued drug — no placeholder created
         if len(drugs) == 0:
             skipped_no_drug += 1
             continue
@@ -641,11 +604,7 @@ def normalize_therapies(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
 
 
 def normalize_indications(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """
-    Extracts DimIndications and FactTrialIndications by exploding the
-    parsed indications list. Deduplicates within each trial first.
-    All 1,000 trials are included regardless of drug catalogue status.
-    """
+
     indication_records = []
     mapping_records    = []
     indication_set: dict[str, str] = {}
@@ -675,21 +634,7 @@ def build_drug_phase_summary(
     fact_trial_therapies: pd.DataFrame,
     dim_trials: pd.DataFrame,
 ) -> pd.DataFrame:
-    """
-    FIX 4 — Drug-level phase funnel support.
-
-    Computes the highest phase reached per drug (therapy_id) across all
-    trials it appears in. This is the correct basis for a phase transition
-    funnel — a trial-level funnel conflates independent trials with
-    sequential development programs for the same drug.
-
-    Example: Pembrolizumab appears in Phase I, II, and III trials. A
-    trial-level count would show 3 separate entries; this table shows
-    one entry with max_phase_numeric=3.0.
-
-    NOTE: max_phase reflects the highest phase observed in this 1,000-trial
-    extract only — not the drug's full global development history.
-    """
+    
     merged = fact_trial_therapies.merge(
         dim_trials[["trial_id", "phase_numeric"]],
         on="trial_id",
@@ -777,7 +722,7 @@ def get_normalized_tables(df: pd.DataFrame) -> dict[str, pd.DataFrame]:
     print(f"     DimIndications: {dim_indications.shape[0]} unique indications")
     print(f"     FactTrialIndications: {fact_trial_indications.shape[0]} mappings")
 
-    # ⑨ Build drug-level phase summary (FIX 4)
+    # ⑨ Build drug-level phase summary
     print("  ⑨ Building drug-level phase summary ...")
     drug_phase_summary = build_drug_phase_summary(fact_trial_therapies, dim_trials)
     print(f"     drug_phase_summary: {drug_phase_summary.shape[0]} unique drugs")
@@ -801,17 +746,17 @@ def get_normalized_tables(df: pd.DataFrame) -> dict[str, pd.DataFrame]:
     v3_pass = (df["trial_duration_days"].dropna() >= 0).all() if df["trial_duration_days"].notna().any() else True
     print(f"     V3 - No negative durations         : {'✅ PASS' if v3_pass else '❌ FAIL'}")
 
-    # V4: is_right_censored count (FIX 1)
+    # V4: is_right_censored count
     v4_pass = dim_trials["is_right_censored"].sum() == 259
     print(f"     V4 - is_right_censored count == 259: {'✅ PASS' if v4_pass else '❌ FAIL'} "
           f"(actual={dim_trials['is_right_censored'].sum()})")
 
-    # V5: is_outcome_unknown count (FIX 3)
+    # V5: is_outcome_unknown count
     v5_pass = dim_trials["is_outcome_unknown"].sum() == 121
     print(f"     V5 - is_outcome_unknown count == 121: {'✅ PASS' if v5_pass else '❌ FAIL'} "
           f"(actual={dim_trials['is_outcome_unknown'].sum()})")
 
-    # V6: No DUMMY_AGENT in therapy tables (FIX 2)
+    # V6: No DUMMY_AGENT in therapy tables
     v6_pass = "DUMMY_AGENT" not in fact_trial_therapies["therapy_id"].values
     print(f"     V6 - No DUMMY_AGENT in therapies   : {'✅ PASS' if v6_pass else '❌ FAIL'}")
 
